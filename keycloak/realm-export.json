@@ -58,6 +58,24 @@
         "attributes": {}
       },
       {
+        "id": "role-offline-access",
+        "name": "offline_access",
+        "description": "${role_offline-access}",
+        "composite": false,
+        "clientRole": false,
+        "containerId": "ztac",
+        "attributes": {}
+      },
+      {
+        "id": "role-uma-authorization",
+        "name": "uma_authorization",
+        "description": "${role_uma_authorization}",
+        "composite": false,
+        "clientRole": false,
+        "containerId": "ztac",
+        "attributes": {}
+      },
+      {
         "id": "default-role-ztac",
         "name": "default-roles-ztac",
         "description": "${role_default-roles}",
