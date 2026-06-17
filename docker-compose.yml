@@ -1,0 +1,109 @@
+# docker-compose.yml
+version: "3.9"
+
+networks:
+  ztac-net:
+    driver: bridge
+
+services:
+  # ============================================================
+  # KEYCLOAK — Identity Provider (Person A)
+  # ============================================================
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0.4
+    container_name: ztac-keycloak
+    command: start-dev --import-realm
+    environment:
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+    ports:
+      - "${KEYCLOAK_HTTP_PORT}:8080"
+    volumes:
+      - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+    networks:
+      - ztac-net
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/8080 && echo -e 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\n\r\n' >&3 && cat <&3 | grep -q '200'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  # ============================================================
+  # PROTECTED SERVICE — downstream microservice (Person A)
+  # ============================================================
+  protected-service:
+    build: ./services/protected-service
+    container_name: ztac-protected-service
+    ports:
+      - "${PROTECTED_SERVICE_PORT}:8000"
+    environment:
+      - KEYCLOAK_ISSUER=http://keycloak:8080/realms/${KEYCLOAK_REALM}
+      - LOGSTASH_URL=http://logstash:5050
+    networks:
+      - ztac-net
+    depends_on:
+      keycloak:
+        condition: service_healthy
+      logstash:
+        condition: service_started
+
+  # ============================================================
+  # ELASTICSEARCH (Person A)
+  # ============================================================
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.14.1
+    container_name: ztac-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=${ES_JAVA_OPTS}
+    ports:
+      - "${ES_HTTP_PORT}:9200"
+    networks:
+      - ztac-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ============================================================
+  # LOGSTASH (Person A)
+  # ============================================================
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.14.1
+    container_name: ztac-logstash
+    volumes:
+      - ./elk/logstash/pipeline.conf:/usr/share/logstash/pipeline/pipeline.conf:ro
+    ports:
+      - "${LOGSTASH_TCP_PORT}:5044"
+      - "${LOGSTASH_HTTP_PORT}:5050"
+    environment:
+      - LS_JAVA_OPTS=-Xms256m -Xmx256m
+    networks:
+      - ztac-net
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  # ============================================================
+  # KIBANA (Person A)
+  # ============================================================
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.14.1
+    container_name: ztac-kibana
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    ports:
+      - "${KIBANA_HTTP_PORT}:5601"
+    networks:
+      - ztac-net
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  # ============================================================
+  # Person B adds: opa, envoy, api-gateway
+  # ============================================================
