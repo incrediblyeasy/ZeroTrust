@@ -22,7 +22,6 @@ from conftest import (
 )
 import httpx
 
-
 class TestTokenReplay:
 
     def test_valid_token_works_before_revocation(self, http_client):
@@ -41,44 +40,41 @@ class TestTokenReplay:
         Core test: obtain a token, revoke the session, then replay.
         The stolen token should be rejected.
         """
-        # Step 1: Get a valid token for bob (analyst)
         token_resp = get_token("bob", "bob123")
         stolen_token = token_resp["access_token"]
 
-        # Verify it works
         resp = http_client.get(
             f"{ENVOY_URL}/api/data/reports",
             headers={"Authorization": f"Bearer {stolen_token}"},
         )
         assert resp.status_code == 200
 
-        # Step 2: Admin revokes bob's sessions (simulating detection of compromise)
         user_id = get_user_id("bob")
         revoke_user_sessions(user_id)
 
-        # Small delay for revocation propagation
-        time.sleep(2)
+        deadline = time.time() + 15
+        status = None
+        while time.time() < deadline:
+            status = http_client.get(
+                f"{ENVOY_URL}/api/data/reports",
+                headers={"Authorization": f"Bearer {stolen_token}"},
+            ).status_code
+            if status in (401, 403):
+                break
+            time.sleep(0.5)
 
-        # Step 3: Attacker replays the stolen token
-        resp = http_client.get(
-            f"{ENVOY_URL}/api/data/reports",
-            headers={"Authorization": f"Bearer {stolen_token}"},
-        )
-
-        # The framework should reject the replayed token
-        assert resp.status_code in (401, 403), (
+        assert status in (401, 403), (
             f"Replayed token should be rejected after session revocation. "
-            f"Got {resp.status_code} instead."
+            f"Got {status} after polling for 15s. Keycloak backchannel logout "
+            f"is asynchronous; this exceeds any reasonable propagation delay."
         )
 
     def test_new_token_works_after_revocation(self, http_client):
         """After revocation, a fresh login should still work."""
-        # Revoke first
         user_id = get_user_id("bob")
         revoke_user_sessions(user_id)
         time.sleep(1)
 
-        # Fresh login
         token_resp = get_token("bob", "bob123")
         new_token = token_resp["access_token"]
 

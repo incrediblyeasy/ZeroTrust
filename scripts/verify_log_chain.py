@@ -17,7 +17,6 @@ import json
 import sys
 import httpx
 
-
 def fetch_all_logs(es_url: str, index: str) -> list[dict]:
     """Fetch all audit logs from ES, sorted by log_sequence ascending."""
     logs = []
@@ -52,7 +51,6 @@ def fetch_all_logs(es_url: str, index: str) -> list[dict]:
 
     return logs
 
-
 def verify_chain(logs: list[dict]) -> tuple[bool, list[str]]:
     """
     Verify the hash chain integrity.
@@ -69,7 +67,6 @@ def verify_chain(logs: list[dict]) -> tuple[bool, list[str]]:
         previous_hash = log.get("previous_hash", "")
         body = log.get("log_body_for_hash", "")
 
-        # Verify previous_hash linkage
         if i == 0:
             if previous_hash != "GENESIS":
                 errors.append(
@@ -85,7 +82,6 @@ def verify_chain(logs: list[dict]) -> tuple[bool, list[str]]:
                     f"got '{previous_hash[:16]}...'"
                 )
 
-        # Recompute hash
         expected_hash = hashlib.sha256(
             (previous_hash + body).encode()
         ).hexdigest()
@@ -98,7 +94,6 @@ def verify_chain(logs: list[dict]) -> tuple[bool, list[str]]:
             )
 
     return len(errors) == 0, errors
-
 
 def main():
     parser = argparse.ArgumentParser(
@@ -133,7 +128,6 @@ def main():
         for err in errors:
             print(f"  - {err}")
         sys.exit(1)
-
 
 if __name__ == "__main__":
     main()

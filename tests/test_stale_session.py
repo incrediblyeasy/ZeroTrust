@@ -13,7 +13,6 @@ import time
 from conftest import get_token, decode_jwt_payload, ENVOY_URL
 import httpx
 
-
 class TestStaleSession:
 
     def test_fresh_token_is_accepted(self, http_client):
@@ -22,7 +21,6 @@ class TestStaleSession:
         token = token_resp["access_token"]
         claims = decode_jwt_payload(token)
 
-        # Token should have > 0 seconds remaining
         import datetime
         now = datetime.datetime.now(datetime.timezone.utc).timestamp()
         remaining = claims["exp"] - now
@@ -48,14 +46,11 @@ class TestStaleSession:
         token = token_resp["access_token"]
         claims = decode_jwt_payload(token)
 
-        # Calculate time to wait
         import datetime
         now = datetime.datetime.now(datetime.timezone.utc).timestamp()
-        wait_time = claims["exp"] - now + 2  # Wait 2 extra seconds past expiry
+        wait_time = claims["exp"] - now + 2
 
         if wait_time > 120:
-            # If token lifespan is > 2 minutes, skip the wait test
-            # and test with a manually crafted expired claim instead
             import pytest
             pytest.skip(
                 f"Token lifespan too long ({wait_time:.0f}s) for real-time test. "
@@ -65,7 +60,6 @@ class TestStaleSession:
         print(f"Waiting {wait_time:.0f}s for token to expire...")
         time.sleep(wait_time)
 
-        # Attempt access with expired token
         resp = http_client.get(
             f"{ENVOY_URL}/api/data/admin",
             headers={"Authorization": f"Bearer {token}"},
@@ -84,7 +78,6 @@ class TestStaleSession:
             import pytest
             pytest.skip("No refresh token issued")
 
-        # Use the refresh token to get a new access token
         from conftest import TOKEN_URL, CLIENT_ID
         resp = http_client.post(
             TOKEN_URL,
@@ -97,7 +90,6 @@ class TestStaleSession:
         assert resp.status_code == 200
         new_token = resp.json()["access_token"]
 
-        # Verify the new token works
         resp = http_client.get(
             f"{ENVOY_URL}/api/data/admin",
             headers={"Authorization": f"Bearer {new_token}"},

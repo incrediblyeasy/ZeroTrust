@@ -1,11 +1,4 @@
 #!/usr/bin/env bash
-# scripts/demo.sh — Person A live demonstration script.
-# Shows: stack health, identity/JWT issuance, tiered endpoints,
-#        audit logging, hash-chain integrity, and tamper detection.
-#
-# Usage (from repo root, Git Bash):  bash scripts/demo.sh
-# Requires: the stack already running ( docker compose up -d ).
-# Uses python for JSON (no jq needed).
 
 set -uo pipefail
 KC=http://localhost:8180

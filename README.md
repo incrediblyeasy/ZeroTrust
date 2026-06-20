@@ -1,0 +1,203 @@
+# ZTAC — Zero-Trust Access Control Framework
+
+ZTAC is a self-contained, open-source reference implementation of a zero-trust
+access-control architecture. It composes a dedicated identity provider
+(Keycloak), a declarative policy engine (Open Policy Agent), a policy
+enforcement proxy (Envoy), an authenticating API gateway, a protected
+microservice, and an accountability pipeline (Elasticsearch, Logstash, Kibana).
+Every request is authenticated, authorised against per-request context (roles,
+device trust, IP risk, token freshness), enforced at a single choke point, and
+recorded in a tamper-evident audit log — with **no implicit trust granted on the
+basis of network location**. The design maps directly onto the CyBOK
+Authentication, Authorisation & Accountability (AAA) Knowledge Area and onto
+NIST SP 800-207 Zero Trust Architecture.
+
+## Architecture
+
+```
+                                    ┌─────────────────┐
+                                    │   ELK Stack      │
+                                    │  (Accountability) │
+                                    │                   │
+                                    │  Elasticsearch    │
+                                    │  Logstash         │
+                                    │  Kibana           │
+                                    └──────▲──────▲────┘
+                                           │      │
+                              access logs  │      │ decision logs
+                                           │      │
+┌──────┐     HTTP       ┌──────────┐           ┌─────────┐
+│      │ ──────────────► │  Envoy   │           │   OPA   │
+│ User │                 │  (PEP)   │           │  (PDP)  │
+│      │ ◄────────────── │ forward  │           │         │
+└──────┘   200/401/403   └────┬─────┘           └────▲────┘
+                              │                      │ per-request
+                         mTLS │                      │ allow/deny
+                              ▼                      │ ({"input":…})
+                        ┌───────────┐ ──────────────┘
+                        │   API     │          ┌───────────────┐
+                        │  Gateway  │ ────────►│   Keycloak    │
+                        │   (PA)    │  JWKS    │    (IdP)      │
+                        └─────┬─────┘ verify   └───────────────┘
+                              │
+                         mTLS │
+                              ▼
+                        ┌───────────┐
+                        │ Protected │
+                        │  Service  │
+                        └───────────┘
+```
+
+Request flow: `Client → Envoy:8080 → API-Gateway:8001 → Protected-Service:8000`.
+Envoy is the data-plane **PEP**: it terminates ingress and forwards every
+request to the gateway — nothing reaches the protected service except through
+it. The gateway is the **PA**: it validates the JWT against Keycloak's JWKS,
+checks the session-revocation blacklist, then consults the **OPA PDP** on every
+request with a `{"input": {…}}` body carrying identity + device + IP context
+for the authoritative ABAC decision. (Vanilla OPA's Data API is not an Envoy
+`ext_authz` server and never sees the JWT, so the PDP call is made by the
+gateway — the only point in the flow where the token context is available.)
+
+## Prerequisites
+
+- Docker 24+
+- Docker Compose v2
+- Python 3.12 (for running the test suite)
+- ~8 GB RAM (the ELK stack is memory-hungry)
+- `openssl` (for mTLS certificate generation)
+
+## Quickstart
+
+From a fresh clone, one command does everything — creates `.env`, generates the
+mTLS PKI, builds the images and starts the whole stack, then waits for every
+service to report healthy:
+
+```bash
+git clone <repo-url> ztac-framework && cd ztac-framework
+./scripts/bootstrap.sh          # or:  make up
+```
+
+The script is idempotent and self-contained: it only needs Docker (with the
+Compose plugin), `bash` and `openssl`, and never touches your system Python.
+Re-run it any time to reconcile the running stack with the code.
+
+Then exercise the framework:
+
+```bash
+# Get an access token (bob is an analyst)
+TOKEN=$(curl -s -X POST http://localhost:8180/realms/ztac/protocol/openid-connect/token \
+  -d "grant_type=password&client_id=ztac-cli&username=bob&password=bob123" \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
+
+# Call a protected endpoint through Envoy (the PEP) — analyst may read reports
+curl -H "Authorization: Bearer $TOKEN" -H "x-device-trust: managed" \
+  http://localhost:8080/api/data/reports
+
+# Run the adversarial test suite + audit hash-chain check (isolated venv)
+./scripts/run-tests.sh          # or:  make test
+
+# Run the OPA Rego policy unit tests
+make opa-test
+```
+
+<details>
+<summary>Manual setup (what <code>bootstrap.sh</code> automates)</summary>
+
+```bash
+cp .env.example .env                 # 1. environment file (compose interpolation)
+./scripts/generate-certs.sh          # 2. mTLS PKI (CA + Envoy/gateway/service certs)
+docker compose up -d --build         # 3. build + start everything
+docker compose ps                    # 4. wait until all are healthy/running
+./scripts/seed-keycloak.sh           # 5. (only if the realm was not auto-imported)
+```
+</details>
+
+Run `make help` to see all convenience targets (`up`, `down`, `test`,
+`opa-test`, `verify-logs`, `logs`, `clean`).
+
+> Tip: the API gateway also exposes a convenience token proxy at
+> `POST http://localhost:8001/token` (same form fields as step 8) and a
+> dependency check at `GET http://localhost:8001/verify`.
+
+## Components
+
+| Component | Image / Tech | Role | CyBOK AAA | NIST SP 800-207 |
+|---|---|---|---|---|
+| **Keycloak** | `keycloak:24.0.4` | OIDC identity provider; issues RS256 JWTs | Authentication | Identity Provider / CDMS |
+| **OPA** | `openpolicyagent/opa` | Declarative ABAC/RBAC policy engine (Rego) | Authorisation | Policy Decision Point (PDP) |
+| **Envoy** | `envoy:v1.31` | Ingress reverse-proxy; forwards to the gateway | Enforcement | Policy Enforcement Point (PEP) |
+| **API Gateway** | FastAPI (Python 3.12) | JWT validation, JTI blacklist, identity injection | Authentication + Session Mgmt | Policy Administrator (PA) |
+| **Protected Service** | FastAPI (Python 3.12) | Downstream microservice serving classified data | — | Resource / Enterprise Resource |
+| **ELK Stack** | Elasticsearch/Logstash/Kibana 8.14 | Hash-chained audit logs and dashboards | Accountability | Continuous Diagnostics & Mitigation (CDM) |
+
+### Endpoints and ports (host)
+
+| Service | URL | Notes |
+|---|---|---|
+| Envoy (PEP, data plane) | http://localhost:8080 | Send all application traffic here |
+| OPA (PDP) | http://localhost:8181 | `/health`, `/v1/data/authz/allow` |
+| API Gateway | http://localhost:8001 | `/health`, `/verify`, `/token` |
+| Keycloak | http://localhost:8180 | Realm `ztac` |
+| Protected Service | http://localhost:8000 | Direct access (lab only) |
+| Elasticsearch | http://localhost:9200 | Audit index `ztac-audit-*` |
+| Kibana | http://localhost:5601 | Audit dashboards |
+
+### Test users
+
+| Username | Password | Realm role | Can reach |
+|---|---|---|---|
+| `alice` | `alice123` | `admin` | public, reports, admin |
+| `bob` | `bob123` | `analyst` | public, reports |
+| `charlie` | `charlie123` | `viewer` | public |
+
+## Documentation
+
+- **[Complete framework guide](docs/FRAMEWORK-GUIDE.md)** — the master reference:
+  every component, the authorization model, how to use, test, operate and extend it
+- [Architecture diagram & data flow](docs/architecture-diagram.md)
+- [CyBOK AAA alignment matrix](docs/cybok-alignment-matrix.md)
+- [Comparative analysis (NIST SP 800-207 & BeyondCorp)](docs/comparative-analysis.md)
+- [JWT token schema (the OPA input contract)](docs/token-schema.md)
+- [Evaluation report](docs/evaluation-report.md)
+
+## Testing
+
+```bash
+# Policy unit tests (no stack required)
+docker run --rm -v "$(pwd)/opa:/opa" openpolicyagent/opa:latest test /opa/policies /opa/tests -v
+
+# Adversarial integration tests (stack must be running)
+pytest tests/ -v
+```
+
+The adversarial suite covers stolen-token replay, stale sessions, log tampering,
+token replay, **privilege escalation via token manipulation**, and
+**unauthenticated service-to-service access**.
+
+## License
+
+Released under the [MIT License](#license).
+
+```
+MIT License
+
+Copyright (c) 2026 ZTAC Framework contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

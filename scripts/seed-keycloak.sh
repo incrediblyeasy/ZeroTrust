@@ -1,11 +1,7 @@
 #!/usr/bin/env bash
-# scripts/seed-keycloak.sh
-# Imports the ZTAC realm into a running Keycloak instance.
-# Usage: ./scripts/seed-keycloak.sh
 
 set -euo pipefail
 
-# Load env vars
 if [ -f .env ]; then
   export $(grep -v '^#' .env | xargs)
 fi
@@ -19,7 +15,6 @@ until curl -sf "${KEYCLOAK_URL}/health/ready" > /dev/null 2>&1; do
 done
 echo "==> Keycloak is ready."
 
-# Get admin access token
 echo "==> Authenticating as admin..."
 ADMIN_TOKEN=$(curl -sf -X POST \
   "${KEYCLOAK_URL}/realms/master/protocol/openid-connect/token" \
@@ -34,7 +29,6 @@ if [ "$ADMIN_TOKEN" = "null" ] || [ -z "$ADMIN_TOKEN" ]; then
   exit 1
 fi
 
-# Check if realm already exists
 REALM_EXISTS=$(curl -sf -o /dev/null -w "%{http_code}" \
   -H "Authorization: Bearer ${ADMIN_TOKEN}" \
   "${KEYCLOAK_URL}/admin/realms/${REALM}")
@@ -59,7 +53,6 @@ else
   fi
 fi
 
-# Verify: get a token for each test user
 echo ""
 echo "==> Verifying token issuance for test users..."
 for USER_VAR in "TEST_USER_ADMIN:TEST_USER_ADMIN_PASSWORD:admin" \

@@ -1,5 +1,19 @@
 .env
+.venv-test/
 __pycache__/
 *.pyc
 .pytest_cache/
 node_modules/
+.claude/
+PersonA_Implementation_Guide.md
+
+# MSc proposal source documents — kept locally, not part of the codebase.
+ZeroTrust_MSc_Proposal.docx
+MSc Project Proposal Template (1).pdf
+
+# mTLS material — regenerated locally by scripts/generate-certs.sh.
+# Never commit private keys or certs, but KEEP the directory present (via the
+# tracked .gitkeep) so the Envoy image build (`COPY certs/`) succeeds on a
+# fresh clone even before the certs have been generated.
+envoy/certs/*
+!envoy/certs/.gitkeep

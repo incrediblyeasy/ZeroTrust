@@ -17,13 +17,11 @@ CLIENT_ID = os.getenv("KEYCLOAK_CLI_CLIENT_ID", "ztac-cli")
 TOKEN_URL = f"{KEYCLOAK_URL}/realms/{REALM}/protocol/openid-connect/token"
 ADMIN_TOKEN_URL = f"{KEYCLOAK_URL}/realms/master/protocol/openid-connect/token"
 
-
 @pytest.fixture
 def http_client():
     """Shared HTTP client with reasonable timeout."""
     with httpx.Client(timeout=10.0) as client:
         yield client
-
 
 def get_token(username: str, password: str) -> dict:
     """
@@ -43,7 +41,6 @@ def get_token(username: str, password: str) -> dict:
         resp.raise_for_status()
         return resp.json()
 
-
 def get_admin_token() -> str:
     """Get a Keycloak admin token for session management operations."""
     with httpx.Client(timeout=10.0) as client:
@@ -59,17 +56,14 @@ def get_admin_token() -> str:
         resp.raise_for_status()
         return resp.json()["access_token"]
 
-
 def decode_jwt_payload(token: str) -> dict:
     """Decode a JWT payload without verification (for test inspection)."""
     import base64
     import json
 
     payload = token.split(".")[1]
-    # Add padding
     payload += "=" * (4 - len(payload) % 4)
     return json.loads(base64.urlsafe_b64decode(payload))
-
 
 def revoke_user_sessions(user_id: str) -> None:
     """Revoke all sessions for a user via Keycloak admin API."""
@@ -79,7 +73,6 @@ def revoke_user_sessions(user_id: str) -> None:
             f"{KEYCLOAK_URL}/admin/realms/{REALM}/users/{user_id}/logout",
             headers={"Authorization": f"Bearer {admin_token}"},
         )
-
 
 def get_user_id(username: str) -> str:
     """Look up a Keycloak user ID by username."""

@@ -14,21 +14,21 @@
                                            │      │
                               access logs  │      │ decision logs
                                            │      │
-┌──────┐     HTTPS      ┌──────────┐  ext_authz  ┌─────────┐
-│      │ ──────────────► │  Envoy   │ ──────────► │   OPA   │
-│ User │                 │  (PEP)   │ ◄────────── │  (PDP)  │
-│      │ ◄────────────── │          │  allow/deny │         │
-└──────┘   200/401/403   └────┬─────┘             └─────────┘
-                              │                        ▲
-                         mTLS │                        │
-                              ▼                        │
-                        ┌───────────┐          ┌───────────────┐
-                        │   API     │          │   Keycloak    │
-                        │  Gateway  │ ────────►│    (IdP)      │
-                        │           │  JWKS    │               │
+┌──────┐     HTTP       ┌──────────┐             ┌─────────┐
+│      │ ──────────────► │  Envoy   │             │   OPA   │
+│ User │                 │  (PEP)   │             │  (PDP)  │
+│      │ ◄────────────── │ forward  │             │         │
+└──────┘ 200/401/403/503 └────┬─────┘             └────▲────┘
+                              │                        │ per-request
+                  (mTLS-ready)│                        │ {"input":…}
+                              ▼                        │ allow/deny
+                        ┌───────────┐ ────────────────┘
+                        │   API     │          ┌───────────────┐
+                        │  Gateway  │ ────────►│   Keycloak    │
+                        │   (PA)    │  JWKS    │    (IdP)      │
                         └─────┬─────┘ verify   └───────────────┘
-                              │
-                         mTLS │
+                              │                + backchannel logout
+                  (mTLS-ready)│
                               ▼
                         ┌───────────┐
                         │ Protected │
@@ -49,14 +49,14 @@
 
 ## Data flow for a single request
 
-1. User sends HTTPS request with JWT `Authorization: Bearer <token>` to Envoy (port 8080).
-2. Envoy's `ext_authz` filter forwards the request metadata (path, method, JWT) to OPA.
-3. OPA evaluates the Rego policy against the request context (user, roles, device trust, IP risk, token expiry).
-4. OPA returns allow or deny to Envoy.
-5. If denied: Envoy returns 403 with structured JSON error. Log emitted to ELK.
-6. If allowed: Envoy forwards the request to the API Gateway over mTLS.
-7. The Gateway validates the JWT signature against Keycloak's JWKS, checks the JTI blacklist, and injects identity headers (`x-auth-user`, `x-auth-roles`).
-8. The Gateway forwards to the Protected Service over mTLS.
-9. The Protected Service processes the request and returns a response.
-10. Every step emits structured JSON logs to Logstash, which adds hash-chain fields and indexes into Elasticsearch.
-11. Kibana provides real-time dashboards for monitoring and audit.
+1. User sends an HTTP request with JWT `Authorization: Bearer <token>` to Envoy (port 8080).
+2. Envoy (the PEP) terminates ingress and forwards the request to the API Gateway. Nothing reaches the protected service except through Envoy. (mTLS to the gateway is provisioned but disabled by default — see the commented `transport_socket` blocks in `envoy.yaml`.)
+3. The Gateway (the PA) validates the JWT against Keycloak's JWKS — RS256 only, correct issuer, not expired, valid signature (refetching the JWKS once on an unknown `kid`).
+4. The Gateway checks the token's `jti` and `session:<sid>` against the revocation blacklist (populated by Keycloak backchannel logout). A revoked session is rejected even though the JWT is otherwise valid.
+5. The Gateway builds an `input` object (user, roles, action, resource, token expiry, device trust, IP risk) and `POST`s it to OPA at `/v1/data/authz/allow`.
+6. OPA (the PDP) evaluates the Rego policy and returns `{"result": true|false}`.
+7. If denied: the Gateway returns `403` (policy) / `401` (auth) / `503` (PDP unreachable, fail closed) with a structured JSON error. The decision is audited.
+8. If allowed: the Gateway forwards to the Protected Service, injecting verified identity headers (`x-auth-user`, `x-auth-roles`, `x-auth-jti`, `x-auth-exp`, `x-request-id`).
+9. The Protected Service trusts those headers, processes the request, and returns a response.
+10. The Gateway emits a structured JSON audit record to Logstash (and Envoy emits access logs); Logstash adds SHA-256 hash-chain fields and indexes into Elasticsearch.
+11. Kibana provides dashboards for monitoring and audit.

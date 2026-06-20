@@ -22,7 +22,7 @@ providing implementation details and pointers to evidence in the codebase.
 | Attribute-Based Access Control (ABAC) | OPA PDP | Rego policies evaluate user identity, roles, device trust level, IP risk score, and time-of-day against resource sensitivity classification | `opa/policies/authz.rego`; `opa/policies/data.json` |
 | Least privilege | OPA PDP + Envoy PEP | Default-deny policy; each resource requires explicit allow rule; no implicit trust based on network location | `opa/policies/authz.rego` — `default allow := false` |
 | Policy Decision Point (PDP) | Open Policy Agent | Declarative Rego policies evaluated on every access request via REST API; supports hot-reload without service restart | `opa/` directory; OPA config |
-| Policy Enforcement Point (PEP) | Envoy Proxy | External authorisation filter (ext_authz) intercepts every HTTP request before routing to backend; denies requests that OPA rejects | `envoy/envoy.yaml` — `ext_authz` filter config |
+| Policy Enforcement Point (PEP) | Envoy Proxy | Terminates ingress and forwards every HTTP request to the gateway; nothing reaches the protected service except through Envoy. The per-request allow/deny decision is made by the gateway (PA) consulting OPA (PDP) | `envoy/envoy.yaml` — listener + router |
 | Dynamic / continuous authorisation | OPA + Keycloak + Gateway | Token expiry checked on every request (not just at login); OPA evaluates current context (device trust, IP risk) per-request | Gateway JWT middleware; `authz.rego` expiry rule |
 
 ## Accountability

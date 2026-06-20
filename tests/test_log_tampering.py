@@ -16,7 +16,6 @@ import time
 import httpx
 from conftest import ES_URL, ENVOY_URL, get_token
 
-
 class TestLogTampering:
 
     def _get_logs(self, client: httpx.Client, count: int = 20) -> list[dict]:
@@ -55,7 +54,6 @@ class TestLogTampering:
 
     def test_chain_intact_before_tampering(self, http_client):
         """Baseline: generate some logs and verify the chain is valid."""
-        # Generate a few real requests to populate logs
         token_resp = get_token("alice", "alice123")
         token = token_resp["access_token"]
 
@@ -65,7 +63,7 @@ class TestLogTampering:
                 headers={"Authorization": f"Bearer {token}"},
             )
 
-        time.sleep(3)  # Let Logstash process
+        time.sleep(3)
 
         logs = self._get_logs(http_client)
         if len(logs) < 2:
@@ -78,7 +76,6 @@ class TestLogTampering:
         """
         Core test: insert a fake log and verify the chain breaks.
         """
-        # Generate real logs first
         token_resp = get_token("alice", "alice123")
         token = token_resp["access_token"]
 
@@ -90,12 +87,10 @@ class TestLogTampering:
 
         time.sleep(3)
 
-        # Get current logs and verify chain is intact
         logs_before = self._get_logs(http_client)
         assert len(logs_before) >= 2, "Need at least 2 logs"
         assert self._verify_chain(logs_before), "Chain should be intact before tampering"
 
-        # Inject a fake log directly into Elasticsearch (bypassing Logstash)
         fake_log = {
             "timestamp": "2024-06-15T12:00:00.000Z",
             "source_component": "ATTACKER",
@@ -117,12 +112,10 @@ class TestLogTampering:
         )
         assert resp.status_code in (200, 201), "Fake log should be insertable"
 
-        # Refresh the index so the fake log is searchable
         http_client.post(f"{ES_URL}/ztac-audit-tampered/_refresh")
 
         time.sleep(1)
 
-        # Fetch logs from both indices
         resp = http_client.post(
             f"{ES_URL}/ztac-audit-*/_search",
             json={
@@ -136,7 +129,6 @@ class TestLogTampering:
         )
         all_logs = [hit["_source"] for hit in resp.json()["hits"]["hits"]]
 
-        # The chain should now be broken
         assert not self._verify_chain(all_logs), (
             "Hash chain should be broken after inserting a fake log entry. "
             "The tampered entry's previous_hash does not match the preceding "

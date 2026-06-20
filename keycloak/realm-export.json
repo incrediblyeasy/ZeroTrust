@@ -261,6 +261,12 @@
       "redirectUris": ["http://localhost:*"],
       "webOrigins": ["*"],
       "frontchannelLogout": false,
+      "attributes": {
+        "backchannel.logout.url": "http://api-gateway:8001/backchannel-logout",
+        "backchannel.logout.session.required": "true",
+        "backchannel.logout.revoke.offline.tokens": "false",
+        "post.logout.redirect.uris": "+"
+      },
       "fullScopeAllowed": true,
       "defaultClientScopes": [
         "web-origins",

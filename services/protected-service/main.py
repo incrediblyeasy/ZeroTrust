@@ -18,7 +18,6 @@ logger = logging.getLogger("protected-service")
 
 LOGSTASH_URL = os.getenv("LOGSTASH_URL", "http://logstash:5050")
 
-
 async def ship_log(log_entry: dict):
     """Send structured log to Logstash asynchronously."""
     log_entry["source_component"] = "protected-service"
@@ -26,8 +25,7 @@ async def ship_log(log_entry: dict):
         async with httpx.AsyncClient(timeout=2.0) as client:
             await client.post(LOGSTASH_URL, json=log_entry)
     except Exception:
-        pass  # Don't let logging failures break the service
-
+        pass
 
 @app.middleware("http")
 async def audit_middleware(request: Request, call_next):
@@ -62,7 +60,6 @@ async def audit_middleware(request: Request, call_next):
     response.headers["x-request-id"] = request_id
     return response
 
-
 @app.get("/api/data/public")
 async def public_data():
     return {
@@ -71,7 +68,6 @@ async def public_data():
         "sensitivity": "public",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
-
 
 @app.get("/api/data/reports")
 async def reports_data():
@@ -86,7 +82,6 @@ async def reports_data():
         "sensitivity": "internal",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
-
 
 @app.get("/api/data/admin")
 async def admin_data():
@@ -106,7 +101,6 @@ async def admin_data():
         "sensitivity": "confidential",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
-
 
 @app.get("/health")
 async def health():

@@ -11,12 +11,12 @@ import threading
 from datetime import datetime, timezone
 from typing import Optional
 
-
 class TokenBlacklist:
     """Thread-safe token revocation blacklist."""
 
     def __init__(self):
-        self._revoked: dict[str, float] = {}  # jti -> revocation timestamp
+        self._revoked: dict[str, float] = {}
+        self._subjects: dict[str, int] = {}
         self._lock = threading.Lock()
 
     def revoke(self, jti: str) -> None:
@@ -28,6 +28,15 @@ class TokenBlacklist:
         """Check if a JTI has been revoked."""
         with self._lock:
             return jti in self._revoked
+
+    def revoke_subject(self, sub: str, not_before: int) -> None:
+        with self._lock:
+            self._subjects[sub] = max(self._subjects.get(sub, 0), int(not_before))
+
+    def is_subject_revoked(self, sub: str, token_iat: int) -> bool:
+        with self._lock:
+            cutoff = self._subjects.get(sub)
+            return cutoff is not None and int(token_iat) <= cutoff
 
     def cleanup(self, max_age_seconds: int = 3600) -> int:
         """Remove entries older than max_age_seconds. Returns count removed."""
@@ -46,6 +55,4 @@ class TokenBlacklist:
         with self._lock:
             return len(self._revoked)
 
-
-# Singleton instance — imported by the gateway
 blacklist = TokenBlacklist()
