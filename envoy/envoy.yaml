@@ -1,7 +1,10 @@
+# Admin interface bound to loopback inside the container only. It exposes
+# powerful operations (config dump, draining, stats) and must never be reachable
+# from other containers or the host.
 admin:
   address:
     socket_address:
-      address: 0.0.0.0
+      address: 127.0.0.1
       port_value: 9901
 
 static_resources:
@@ -65,6 +68,16 @@ static_resources:
                   virtual_hosts:
                     - name: ztac_backend
                       domains: ["*"]
+                      # Strip identity / trust / internal-auth headers supplied
+                      # by the client so they can only ever be set by the trusted
+                      # gateway. Without this a client could spoof its identity
+                      # or forge the gateway→service auth secret.
+                      request_headers_to_remove:
+                        - x-auth-user
+                        - x-auth-roles
+                        - x-auth-jti
+                        - x-auth-exp
+                        - x-ztac-gateway-auth
                       routes:
                         - match:
                             prefix: "/"

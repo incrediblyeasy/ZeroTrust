@@ -3,7 +3,9 @@
 verify_log_chain.py — Verify the integrity of the ZTAC audit log hash chain.
 
 Queries Elasticsearch for all audit logs in sequence order and verifies
-that each log's hash is SHA-256(previous_hash + log_body).
+that each log's hash is HMAC-SHA256(AUDIT_HMAC_KEY, previous_hash + log_body).
+The key is a shared secret, so tampering cannot be masked by recomputing the
+chain without it. Set AUDIT_HMAC_KEY to match the Logstash pipeline.
 
 Usage:
     python scripts/verify_log_chain.py [--es-url http://localhost:9200] [--index ztac-audit-*]
@@ -12,10 +14,24 @@ CyBOK AAA alignment: Accountability — Non-repudiation, Audit Log Integrity
 """
 
 import argparse
+import hmac
 import hashlib
 import json
+import os
 import sys
 import httpx
+
+# Must match the key configured for Logstash (docker-compose AUDIT_HMAC_KEY).
+AUDIT_HMAC_KEY = os.getenv("AUDIT_HMAC_KEY", "ztac-dev-audit-key")
+
+
+def _chain_hash(previous_hash: str, body: str) -> str:
+    """HMAC-SHA256(key, previous_hash + body) — the keyed audit-chain digest."""
+    return hmac.new(
+        AUDIT_HMAC_KEY.encode(),
+        (previous_hash + body).encode(),
+        hashlib.sha256,
+    ).hexdigest()
 
 def fetch_all_logs(es_url: str, index: str) -> list[dict]:
     """Fetch all audit logs from ES, sorted by log_sequence ascending."""
@@ -82,9 +98,7 @@ def verify_chain(logs: list[dict]) -> tuple[bool, list[str]]:
                     f"got '{previous_hash[:16]}...'"
                 )
 
-        expected_hash = hashlib.sha256(
-            (previous_hash + body).encode()
-        ).hexdigest()
+        expected_hash = _chain_hash(previous_hash, body)
 
         if stored_hash != expected_hash:
             errors.append(

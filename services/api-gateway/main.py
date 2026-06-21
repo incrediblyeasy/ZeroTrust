@@ -28,13 +28,34 @@ from jose import jwt
 from jose.exceptions import ExpiredSignatureError, JWTClaimsError, JWTError
 from starlette.responses import JSONResponse, Response
 
-from shared.keycloak_logout import handle_backchannel_logout
+from shared.keycloak_logout import apply_backchannel_logout
 from shared.token_blacklist import blacklist
 
 KEYCLOAK_ISSUER = os.getenv("KEYCLOAK_ISSUER", "http://keycloak:8080/realms/ztac")
 PROTECTED_SERVICE_URL = os.getenv("PROTECTED_SERVICE_URL", "http://protected-service:8000")
 OPA_URL = os.getenv("OPA_URL", "http://opa:8181")
 LOGSTASH_URL = os.getenv("LOGSTASH_URL", "http://logstash:5050")
+
+# Confidential client this gateway represents; logout tokens are audience-bound
+# to it, and (optionally) presented access tokens are restricted to it.
+GATEWAY_CLIENT_ID = os.getenv("KEYCLOAK_GATEWAY_CLIENT_ID", "ztac-gateway")
+
+# Only accept access tokens whose authorized party (azp) is in this allowlist.
+# This rejects tokens minted for *other* clients in the same realm. Empty list
+# disables the check.
+JWT_ALLOWED_AZP = [
+    a.strip() for a in os.getenv("JWT_ALLOWED_AZP", "ztac-cli,ztac-gateway").split(",")
+    if a.strip()
+]
+# If set, the access token's audience (aud) must contain this value.
+JWT_AUDIENCE = os.getenv("JWT_AUDIENCE", "").strip()
+
+# Shared secret the gateway injects so the protected service can prove a request
+# arrived through the PEP/PA chain and not via a direct network bypass.
+INTERNAL_GATEWAY_SECRET = os.getenv("INTERNAL_GATEWAY_SECRET", "")
+
+# Reject request bodies larger than this to bound memory use (DoS guard).
+MAX_BODY_BYTES = int(os.getenv("MAX_BODY_BYTES", str(1 * 1024 * 1024)))
 
 JWKS_URI = f"{KEYCLOAK_ISSUER}/protocol/openid-connect/certs"
 TOKEN_ENDPOINT = f"{KEYCLOAK_ISSUER}/protocol/openid-connect/token"
@@ -48,6 +69,15 @@ GATEWAY_PATHS = {"/health", "/verify", "/token", "/backchannel-logout"}
 HOP_BY_HOP = {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
     "te", "trailers", "transfer-encoding", "upgrade", "content-length", "host",
+}
+
+# Identity/trust headers a client must never be able to set: the gateway is the
+# sole authority for these. They are stripped from inbound requests before
+# forwarding so a client cannot impersonate a user or forge the internal-auth
+# secret even if Envoy's ingress strip is bypassed.
+RESERVED_HEADERS = {
+    "x-auth-user", "x-auth-roles", "x-auth-jti", "x-auth-exp",
+    "x-ztac-gateway-auth",
 }
 
 app = FastAPI(title="ZTAC API Gateway")
@@ -126,6 +156,67 @@ def validate_token(token: str) -> dict:
     if key is None:
         raise TokenError("unknown_signing_key")
 
+    decode_options = {"verify_aud": bool(JWT_AUDIENCE)}
+    try:
+        claims = jwt.decode(
+            token,
+            key,
+            algorithms=ALLOWED_ALGORITHMS,
+            issuer=KEYCLOAK_ISSUER,
+            audience=JWT_AUDIENCE or None,
+            options=decode_options,
+        )
+    except ExpiredSignatureError:
+        raise TokenError("expired")
+    except JWTClaimsError:
+        # Do not echo verifier internals back to the client.
+        raise TokenError("invalid_claims")
+    except JWTError:
+        raise TokenError("signature_verification_failed")
+
+    # Restrict to tokens issued for known clients (defence against accepting a
+    # valid token minted for a different client in the same realm).
+    if JWT_ALLOWED_AZP:
+        azp = claims.get("azp")
+        if azp not in JWT_ALLOWED_AZP:
+            raise TokenError("untrusted_client")
+
+    return claims
+
+
+async def validate_logout_token(token: str) -> dict:
+    """
+    Verify a Keycloak OIDC back-channel *logout token* against the JWKS and
+    return its claims. Refreshes the JWKS once if the signing key is unknown.
+
+    The logout token's audience must be one of the trusted clients that share
+    this gateway's backchannel endpoint (the gateway's own confidential client
+    and any client in JWT_ALLOWED_AZP). Keycloak audiences the logout token to
+    the client whose session is ending — e.g. the public ``ztac-cli`` used to
+    obtain access tokens — so pinning to a single client id would silently drop
+    legitimate revocations.
+    """
+    if not token or token.count(".") != 2:
+        raise TokenError("malformed_token")
+
+    try:
+        header = jwt.get_unverified_header(token)
+    except JWTError:
+        raise TokenError("malformed_header")
+
+    if header.get("alg") not in ALLOWED_ALGORITHMS:
+        raise TokenError(f"unsupported_algorithm:{header.get('alg')}")
+
+    kid = header.get("kid")
+    if kid and _find_key(kid) is None:
+        try:
+            await _fetch_jwks()
+        except Exception:
+            pass
+    key = _find_key(kid) if kid else None
+    if key is None:
+        raise TokenError("unknown_signing_key")
+
     try:
         claims = jwt.decode(
             token,
@@ -136,10 +227,17 @@ def validate_token(token: str) -> dict:
         )
     except ExpiredSignatureError:
         raise TokenError("expired")
-    except JWTClaimsError as exc:
-        raise TokenError(f"invalid_claims:{exc}")
-    except JWTError as exc:
-        raise TokenError(f"signature_verification_failed:{exc}")
+    except JWTClaimsError:
+        raise TokenError("invalid_claims")
+    except JWTError:
+        raise TokenError("signature_verification_failed")
+
+    # Audience must be a trusted client sharing this backchannel endpoint.
+    aud = claims.get("aud")
+    token_aud = {aud} if isinstance(aud, str) else set(aud or [])
+    allowed_aud = set(JWT_ALLOWED_AZP) | {GATEWAY_CLIENT_ID}
+    if not token_aud & allowed_aud:
+        raise TokenError("untrusted_logout_audience")
 
     return claims
 
@@ -251,13 +349,19 @@ async def forward_to_protected(
     assert _http is not None
 
     headers = {
-        k: v for k, v in request.headers.items() if k.lower() not in HOP_BY_HOP
+        k: v for k, v in request.headers.items()
+        if k.lower() not in HOP_BY_HOP and k.lower() not in RESERVED_HEADERS
     }
     headers["x-auth-user"] = identity.get("user", "anonymous")
     headers["x-auth-roles"] = json.dumps(identity.get("roles", []))
     headers["x-auth-jti"] = identity.get("jti", "")
     headers["x-auth-exp"] = str(identity.get("exp", 0))
     headers["x-request-id"] = request_id
+    # Prove to the protected service that this request traversed the PEP/PA
+    # chain. The secret is never exposed to clients, so a direct network call
+    # cannot reproduce it.
+    if INTERNAL_GATEWAY_SECRET:
+        headers["x-ztac-gateway-auth"] = INTERNAL_GATEWAY_SECRET
 
     url = f"{PROTECTED_SERVICE_URL}{request.url.path}"
     upstream = await _http.request(
@@ -293,6 +397,22 @@ async def gateway_middleware(request: Request, call_next):
                    resp.status_code, duration_ms)
         resp.headers["x-request-id"] = request_id
         return resp
+
+    # Bound request body size to protect against memory-exhaustion DoS. We can
+    # reject on the declared Content-Length without buffering the payload.
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            if int(content_length) > MAX_BODY_BYTES:
+                return done(
+                    JSONResponse({"error": "payload_too_large"}, status_code=413),
+                    "deny", "payload_too_large",
+                )
+        except ValueError:
+            return done(
+                JSONResponse({"error": "invalid_content_length"}, status_code=400),
+                "deny", "invalid_content_length",
+            )
 
     auth_header = request.headers.get("authorization", "")
 
@@ -418,9 +538,28 @@ async def token_proxy(request: Request):
 
 @app.post("/backchannel-logout")
 async def backchannel_logout(request: Request):
-    """Keycloak backchannel logout — revokes the session via the shared handler."""
+    """
+    Keycloak OIDC back-channel logout endpoint.
+
+    The logout token's RS256 signature, issuer and audience are verified against
+    Keycloak's JWKS *before* any session is revoked, so a forged or replayed
+    token cannot force-logout users.
+    """
     form = await request.form()
     logout_token = form.get("logout_token", "")
-    result = handle_backchannel_logout(logout_token)
+    if not logout_token:
+        return JSONResponse(
+            {"status": "error", "detail": "missing_logout_token"}, status_code=400
+        )
+
+    try:
+        claims = await validate_logout_token(logout_token)
+    except TokenError as exc:
+        return JSONResponse(
+            {"status": "error", "detail": f"invalid_logout_token:{exc}"},
+            status_code=400,
+        )
+
+    result = apply_backchannel_logout(claims)
     status_code = 200 if result.get("status") == "ok" else 400
     return JSONResponse(result, status_code=status_code)

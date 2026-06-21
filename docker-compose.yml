@@ -13,7 +13,8 @@ services:
       KC_HOSTNAME_URL: http://keycloak:8080
       KC_HOSTNAME_STRICT: "false"
     ports:
-      - "${KEYCLOAK_HTTP_PORT}:8080"
+      # Bound to loopback so the IdP/admin console is not exposed on the LAN.
+      - "127.0.0.1:${KEYCLOAK_HTTP_PORT}:8080"
     volumes:
       - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
     networks:
@@ -29,10 +30,13 @@ services:
     build: ./services/protected-service
     container_name: ztac-protected-service
     ports:
-      - "${PROTECTED_SERVICE_PORT}:8000"
+      # Loopback only. The service now also enforces app-level gateway auth, so
+      # a direct call (bypassing Envoy/OPA) is rejected even from localhost.
+      - "127.0.0.1:${PROTECTED_SERVICE_PORT}:8000"
     environment:
       - KEYCLOAK_ISSUER=http://keycloak:8080/realms/${KEYCLOAK_REALM}
       - LOGSTASH_URL=http://logstash:5050
+      - INTERNAL_GATEWAY_SECRET=${INTERNAL_GATEWAY_SECRET}
     networks:
       - ztac-net
     depends_on:
@@ -49,7 +53,8 @@ services:
       - xpack.security.enabled=false
       - ES_JAVA_OPTS=${ES_JAVA_OPTS}
     ports:
-      - "${ES_HTTP_PORT}:9200"
+      # Loopback only — the audit store has no auth in this lab profile.
+      - "127.0.0.1:${ES_HTTP_PORT}:9200"
     networks:
       - ztac-net
     healthcheck:
@@ -65,13 +70,17 @@ services:
     volumes:
       - ./elk/logstash/pipeline.conf:/usr/share/logstash/pipeline/pipeline.conf:ro
     ports:
-      - "${LOGSTASH_TCP_PORT}:5044"
-      - "${LOGSTASH_HTTP_PORT}:5050"
+      # Loopback only — the log ingest endpoints are unauthenticated; do not
+      # expose them on the LAN where arbitrary audit records could be injected.
+      - "127.0.0.1:${LOGSTASH_TCP_PORT}:5044"
+      - "127.0.0.1:${LOGSTASH_HTTP_PORT}:5050"
     environment:
       - LS_JAVA_OPTS=-Xms256m -Xmx256m
       - PIPELINE_WORKERS=1
       - PIPELINE_ORDERED=true
       - PIPELINE_BATCH_SIZE=1
+      # Secret key for the HMAC-chained tamper-evident audit log.
+      - AUDIT_HMAC_KEY=${AUDIT_HMAC_KEY}
     networks:
       - ztac-net
     depends_on:
@@ -84,7 +93,8 @@ services:
     environment:
       - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
     ports:
-      - "${KIBANA_HTTP_PORT}:5601"
+      # Loopback only — Kibana has no auth in this lab profile.
+      - "127.0.0.1:${KIBANA_HTTP_PORT}:5601"
     networks:
       - ztac-net
     depends_on:
@@ -95,7 +105,9 @@ services:
     build: ./opa
     container_name: ztac-opa
     ports:
-      - "${OPA_HTTP_PORT}:8181"
+      # Loopback only — OPA's management API (policy push) is unauthenticated;
+      # never expose the PDP on the LAN. The gateway reaches it over ztac-net.
+      - "127.0.0.1:${OPA_HTTP_PORT}:8181"
     networks:
       - ztac-net
     healthcheck:
@@ -109,12 +121,16 @@ services:
     build: ./services/api-gateway
     container_name: ztac-api-gateway
     ports:
-      - "8001:8001"
+      # Loopback only — application traffic should go through Envoy (8080).
+      - "127.0.0.1:8001:8001"
     environment:
       - KEYCLOAK_ISSUER=http://keycloak:8080/realms/${KEYCLOAK_REALM}
+      - KEYCLOAK_GATEWAY_CLIENT_ID=${KEYCLOAK_GATEWAY_CLIENT_ID}
       - PROTECTED_SERVICE_URL=http://protected-service:8000
       - OPA_URL=http://opa:8181
       - LOGSTASH_URL=http://logstash:5050
+      - INTERNAL_GATEWAY_SECRET=${INTERNAL_GATEWAY_SECRET}
+      - JWT_ALLOWED_AZP=${JWT_ALLOWED_AZP:-ztac-cli,ztac-gateway}
     volumes:
       - ./services/shared:/app/shared:ro
     networks:
@@ -131,7 +147,9 @@ services:
     build: ./envoy
     container_name: ztac-envoy
     ports:
-      - "${ENVOY_HTTP_PORT}:8080"
+      # Loopback only for the lab. To accept LAN/remote traffic, terminate TLS
+      # here first, then publish on 0.0.0.0.
+      - "127.0.0.1:${ENVOY_HTTP_PORT}:8080"
     networks:
       - ztac-net
     depends_on:

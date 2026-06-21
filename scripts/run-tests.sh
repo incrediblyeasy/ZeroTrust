@@ -5,6 +5,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${REPO_ROOT}"
 
+# Load the stack's secrets (AUDIT_HMAC_KEY, KEYCLOAK_ADMIN_PASSWORD,
+# INTERNAL_GATEWAY_SECRET, ...) so on-host tests and the log-chain verifier
+# use the same values the running containers were given.
+if [[ -f .env ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source .env
+  set +a
+fi
+
 VENV="${REPO_ROOT}/.venv-test"
 PY="${VENV}/bin/python"
 

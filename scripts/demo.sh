@@ -2,8 +2,13 @@
 
 set -uo pipefail
 KC=http://localhost:8180
-SVC=http://localhost:8000
+GW=http://localhost:8080      # Envoy PEP — ALL application traffic goes here
+SVC=http://localhost:8000    # protected service direct (used to prove the bypass is closed)
 ES=http://localhost:9200
+
+# Load the stack's secrets (e.g. AUDIT_HMAC_KEY) so the on-host log-chain
+# verifier uses the same key the running Logstash was given.
+[ -f .env ] && { set -a; . ./.env; set +a; }
 
 line() { echo; echo "============================================================"; echo "$1"; echo "============================================================"; }
 
@@ -23,9 +28,10 @@ docker compose ps --format "table {{.Name}}\t{{.Status}}"
 line "STEP 2  —  Identity: Keycloak issues a signed JWT badge (user: alice / admin)"
 curl -s -X POST "$KC/realms/ztac/protocol/openid-connect/token" \
   -d "grant_type=password&client_id=ztac-cli&username=alice&password=alice123" -o demo_tok.json
+TOKEN=$(python -c "import json;print(json.load(open('demo_tok.json'))['access_token'])")
 python -c "
 import json,base64
-t=json.load(open('demo_tok.json'))['access_token']
+t='$TOKEN'
 p=t.split('.')[1]; p+='='*(-len(p)%4)
 c=json.loads(base64.urlsafe_b64decode(p))
 print('  preferred_username :', c['preferred_username'])
@@ -34,21 +40,26 @@ print('  jti (badge id)     :', c['jti'])
 print('  lifespan (exp-iat) :', c['exp']-c['iat'], 'seconds  (short-lived = zero trust)')
 "
 rm -f demo_tok.json
+AUTH=(-H "Authorization: Bearer $TOKEN" -H "x-device-trust: managed")
 
-line "STEP 3  —  Protected service: three tiered endpoints respond"
-echo "-- /api/data/public  (anyone):";  curl -s "$SVC/api/data/public"
-echo; echo "-- /api/data/reports (analyst+):"; curl -s "$SVC/api/data/reports"
-echo; echo "-- /api/data/admin   (admin):";    curl -s "$SVC/api/data/admin"
+line "STEP 3  —  Enforced access THROUGH Envoy (PEP) → Gateway (PA) → OPA (PDP)"
+echo "-- /api/data/public  (anyone):";        curl -s "${AUTH[@]}" "$GW/api/data/public"
+echo; echo "-- /api/data/reports (analyst+):"; curl -s "${AUTH[@]}" "$GW/api/data/reports"
+echo; echo "-- /api/data/admin   (admin):";    curl -s "${AUTH[@]}" "$GW/api/data/admin"
 echo
 
+line "STEP 3b —  Bypass check: a DIRECT call to the protected service is refused"
+echo "-- direct GET $SVC/api/data/admin (bypassing Envoy/OPA):"
+curl -s -o /dev/null -w "   HTTP %{http_code}  (expected 403 — no gateway-auth secret)\n" "$SVC/api/data/admin"
+
 line "STEP 4  —  Accountability: generate audit traffic, then count stored logs"
-for i in $(seq 1 8); do curl -s "$SVC/api/data/public" >/dev/null; done
+for i in $(seq 1 8); do curl -s "${AUTH[@]}" "$GW/api/data/public" >/dev/null; done
 echo "  Sent 8 requests. Waiting for Logstash to ingest + hash-chain them..."
 sleep 7
 curl -s "$ES/ztac-audit-*/_count"
 echo
 
-line "STEP 5  —  Integrity proof: verify the SHA-256 hash chain (should PASS)"
+line "STEP 5  —  Integrity proof: verify the HMAC-SHA256 hash chain (should PASS)"
 python scripts/verify_log_chain.py
 
 line "STEP 6  —  Tamper detection: inject a FORGED log, then re-verify (should FAIL)"

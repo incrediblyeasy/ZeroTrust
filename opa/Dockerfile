@@ -1,6 +1,7 @@
 FROM busybox:1.36.1-musl AS busybox
 
-FROM openpolicyagent/opa:latest
+# Pinned for reproducible builds — never track a floating :latest for the PDP.
+FROM openpolicyagent/opa:0.66.0
 
 COPY --from=busybox /bin/busybox /bin/busybox
 

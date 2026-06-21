@@ -56,7 +56,7 @@
 5. The Gateway builds an `input` object (user, roles, action, resource, token expiry, device trust, IP risk) and `POST`s it to OPA at `/v1/data/authz/allow`.
 6. OPA (the PDP) evaluates the Rego policy and returns `{"result": true|false}`.
 7. If denied: the Gateway returns `403` (policy) / `401` (auth) / `503` (PDP unreachable, fail closed) with a structured JSON error. The decision is audited.
-8. If allowed: the Gateway forwards to the Protected Service, injecting verified identity headers (`x-auth-user`, `x-auth-roles`, `x-auth-jti`, `x-auth-exp`, `x-request-id`).
-9. The Protected Service trusts those headers, processes the request, and returns a response.
-10. The Gateway emits a structured JSON audit record to Logstash (and Envoy emits access logs); Logstash adds SHA-256 hash-chain fields and indexes into Elasticsearch.
+8. If allowed: the Gateway forwards to the Protected Service, injecting verified identity headers (`x-auth-user`, `x-auth-roles`, `x-auth-jti`, `x-auth-exp`, `x-request-id`) plus the secret `x-ztac-gateway-auth` header. (Client-supplied copies of these headers are stripped at Envoy ingress.)
+9. The Protected Service verifies the `x-ztac-gateway-auth` secret (fail-closed; a direct call without it gets `403`), then trusts the identity headers, processes the request, and returns a response.
+10. The Gateway emits a structured JSON audit record to Logstash (and Envoy emits access logs); Logstash adds keyed HMAC-SHA256 hash-chain fields and indexes into Elasticsearch.
 11. Kibana provides dashboards for monitoring and audit.

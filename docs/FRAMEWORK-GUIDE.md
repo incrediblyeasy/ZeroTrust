@@ -47,8 +47,8 @@ maps cleanly onto the **NIST SP 800-207** logical zero-trust architecture:
 | Should you reach this, *right now*? (**Authorisation**) | Policy Decision Point (PDP) | **OPA** (Rego ABAC/RBAC) |
 | Collect the verified identity and ask the PDP | Policy Administrator (PA) | **API Gateway** (FastAPI) |
 | Let nothing through unless allowed (**Enforcement**) | Policy Enforcement Point (PEP) | **Envoy** proxy |
-| What happened? (**Accountability**) | Continuous Diagnostics (CDM) | **ELK** with a SHA-256 hash chain |
-| Secure transport regardless of network | PKI | **mTLS** (OpenSSL CA + leaf certs) |
+| What happened? (**Accountability**) | Continuous Diagnostics (CDM) | **ELK** with a keyed HMAC-SHA256 hash chain |
+| Prove the request came through the chain | Trust plane | **Gateway-auth secret** (app-layer); **mTLS** PKI provisioned for the transport upgrade |
 
 The defining zero-trust properties ZTAC realises:
 
@@ -242,9 +242,11 @@ Host port: **`8000` → 8000** (exposed for the lab; see
 ### 3.6 ELK — Accountability
 
 - **Logstash** receives audit records on an HTTP input (host `5050`) and a Beats
-  input (`5044`). Its filter computes a **SHA-256 hash chain**:
-  `log_hash = SHA256(previous_hash + body_json)`, seeded with `"GENESIS"`. Each
-  document stores both `previous_hash` and `log_hash`.
+  input (`5044`). Its filter computes a **keyed HMAC-SHA256 hash chain**:
+  `log_hash = HMAC_SHA256(AUDIT_HMAC_KEY, previous_hash + body_json)`, seeded
+  with `"GENESIS"`. Each document stores both `previous_hash` and `log_hash`.
+  Because the key is secret, an attacker who can write to Elasticsearch cannot
+  forge a self-consistent chain.
 - **Elasticsearch** stores records in daily `ztac-audit-*` indices (host `9200`).
 - **Kibana** (host `5601`) provides the audit dashboard.
 
@@ -543,7 +545,7 @@ resource, action, decision, deny reason, status, duration, `request_id`) shipped
 to Logstash. Logstash computes, for each event:
 
 ```
-log_hash = SHA256(previous_hash + canonical_body_json)      # seed: "GENESIS"
+log_hash = HMAC_SHA256(AUDIT_HMAC_KEY, previous_hash + canonical_body_json)   # seed: "GENESIS"
 ```
 
 and stores `previous_hash` + `log_hash` alongside the record in
@@ -612,18 +614,24 @@ venv).
 This is a **reference/lab** implementation. Understand these boundaries before
 treating it as production-ready:
 
-- **The protected service is exposed on the host (`:8000`) for testing.** A
-  caller on the host can reach it directly, bypassing Envoy and the gateway.
-  This is intentional for the lab (and is *documented* by
-  `test_unauth_s2s.py::test_direct_service_access_bypassing_envoy`). In
-  production the service would have no host port and live only on the internal
-  network, reachable solely via Envoy, with mTLS enforced.
-- **mTLS is provisioned but not enforced by default.** Certs are generated and
-  baked in; the `transport_socket` blocks in `envoy.yaml` are commented out.
-  Enable them (and the gateway/service ends) to require mutual TLS.
+- **Direct access to the protected service is now refused.** The service fails
+  closed: every request must carry the gateway-injected `INTERNAL_GATEWAY_SECRET`
+  (constant-time compared), so a host-local call on `:8000` that bypasses
+  Envoy/OPA gets `403`. The host port is also bound to loopback. This is
+  enforced and regression-tested
+  (`test_unauth_s2s.py::test_direct_service_access_bypassing_envoy` and
+  `test_offline_security.py`).
+- **mTLS is provisioned as a production upgrade, not enforced by default.** The
+  app-layer gateway-auth above is the active service-to-service control. Certs
+  are generated and baked in; enabling the `transport_socket` blocks in
+  `envoy.yaml` (and the gateway/service ends) adds transport-layer mutual TLS on
+  top.
 - **Device posture and IP risk are simulated** via the `x-device-trust` /
   `x-ip-risk` request headers. A real deployment must source these from trusted
-  signals the client cannot forge.
+  signals the client cannot forge. Note: identity headers (`x-auth-*`) and the
+  internal-auth secret header **are** stripped at Envoy ingress, so a client
+  cannot spoof identity or forge the gateway secret — only the posture hints
+  remain client-supplied in the lab.
 - **The revocation blacklist is in-memory** and single-process. A multi-replica
   gateway would need a shared store (e.g. Redis).
 - **Keycloak runs in `start-dev`** with an ephemeral database — not for

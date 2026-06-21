@@ -3,7 +3,9 @@ Protected Service — expanded with request tracking and internal-call validatio
 """
 
 from fastapi import FastAPI, Request, Response
+from starlette.responses import JSONResponse
 from datetime import datetime, timezone
+import hmac
 import logging
 import json
 import uuid
@@ -17,6 +19,45 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("protected-service")
 
 LOGSTASH_URL = os.getenv("LOGSTASH_URL", "http://logstash:5050")
+
+# Shared secret the api-gateway injects on every forwarded request. The
+# protected service is a zero-trust resource: it does not trust the network, so
+# it verifies that each request actually traversed the PEP/PA chain instead of
+# arriving via a direct connection that bypasses Envoy/OPA. The secret is never
+# exposed to clients.
+INTERNAL_GATEWAY_SECRET = os.getenv("INTERNAL_GATEWAY_SECRET", "")
+
+# Routes reachable without the gateway secret (liveness probing only).
+PUBLIC_PATHS = {"/health"}
+
+
+@app.middleware("http")
+async def gateway_auth_middleware(request: Request, call_next):
+    """Reject any request that did not arrive through the trusted gateway."""
+    if request.url.path in PUBLIC_PATHS:
+        return await call_next(request)
+
+    if not INTERNAL_GATEWAY_SECRET:
+        # Fail closed: refuse to serve protected data without a configured
+        # secret rather than silently trusting the network.
+        return JSONResponse(
+            {"error": "gateway_auth_misconfigured"}, status_code=503
+        )
+
+    presented = request.headers.get("x-ztac-gateway-auth", "")
+    if not hmac.compare_digest(presented, INTERNAL_GATEWAY_SECRET):
+        logger.info(json.dumps({
+            "service": "protected-service",
+            "event": "direct_access_blocked",
+            "path": str(request.url.path),
+            "client_ip": request.client.host if request.client else "unknown",
+        }))
+        return JSONResponse(
+            {"error": "forbidden", "detail": "direct_access_denied"},
+            status_code=403,
+        )
+
+    return await call_next(request)
 
 async def ship_log(log_entry: dict):
     """Send structured log to Logstash asynchronously."""

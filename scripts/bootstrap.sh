@@ -18,11 +18,30 @@ command -v openssl >/dev/null 2>&1 || die "openssl is required to generate the m
 docker info >/dev/null 2>&1 || die "cannot talk to the Docker daemon — is it running and do you have permission?"
 echo "    docker, compose, openssl present; daemon reachable."
 
+set_env_var() {
+  # Replace KEY=... in .env (key is assumed to already exist from .env.example).
+  local key="$1" value="$2"
+  if grep -q "^${key}=" .env; then
+    # Use a sed delimiter unlikely to appear in a hex secret.
+    sed -i.bak "s|^${key}=.*|${key}=${value}|" .env && rm -f .env.bak
+  else
+    printf '%s=%s\n' "${key}" "${value}" >> .env
+  fi
+}
+
 if [[ -f .env ]]; then
   say ".env already present — leaving it untouched"
 else
-  say "Creating .env from .env.example"
+  say "Creating .env from .env.example with freshly generated secrets"
   cp .env.example .env
+
+  # Replace every placeholder secret with a strong random value so no two
+  # deployments share credentials and nothing weak ever reaches production.
+  set_env_var KEYCLOAK_ADMIN_PASSWORD "$(openssl rand -hex 24)"
+  set_env_var INTERNAL_GATEWAY_SECRET "$(openssl rand -hex 32)"
+  set_env_var AUDIT_HMAC_KEY "$(openssl rand -hex 32)"
+  echo "    Generated random KEYCLOAK_ADMIN_PASSWORD, INTERNAL_GATEWAY_SECRET, AUDIT_HMAC_KEY."
+  echo "    (Keycloak admin password is stored in .env — never committed.)"
 fi
 
 say "Generating mTLS certificates (idempotent)"
@@ -61,7 +80,7 @@ cat <<'EOF'
 
 ZTAC is ready.
   - Envoy ingress (data plane):   http://localhost:8080
-  - Keycloak:                     http://localhost:8180  (admin/admin)
+  - Keycloak:                     http://localhost:8180  (admin user: see KEYCLOAK_ADMIN / KEYCLOAK_ADMIN_PASSWORD in .env)
   - Kibana:                       http://localhost:5601
   - API gateway health:           http://localhost:8001/health
 

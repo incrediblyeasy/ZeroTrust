@@ -11,10 +11,20 @@ CyBOK AAA alignment: Accountability — Audit Log Integrity, Non-repudiation
 """
 
 import hashlib
+import hmac
 import json
+import os
 import time
 import httpx
 from conftest import ES_URL, ENVOY_URL, get_token
+
+AUDIT_HMAC_KEY = os.getenv("AUDIT_HMAC_KEY", "ztac-dev-audit-key")
+
+
+def _chain_hash(previous_hash: str, body: str) -> str:
+    return hmac.new(
+        AUDIT_HMAC_KEY.encode(), (previous_hash + body).encode(), hashlib.sha256
+    ).hexdigest()
 
 class TestLogTampering:
 
@@ -42,7 +52,7 @@ class TestLogTampering:
             body = log.get("log_body_for_hash", "")
             stored = log.get("log_hash", "")
 
-            expected = hashlib.sha256((prev + body).encode()).hexdigest()
+            expected = _chain_hash(prev, body)
             if stored != expected:
                 return False
 

@@ -12,6 +12,11 @@ COPY main.py /app/main.py
 
 RUN mkdir -p /app/shared && touch /app/shared/__init__.py
 
+# Run as an unprivileged user (defence in depth: no root inside the container).
+RUN useradd --system --uid 10001 --no-create-home appuser \
+    && chown -R appuser:appuser /app
+USER appuser
+
 EXPOSE 8001
 
 HEALTHCHECK --interval=10s --timeout=5s --retries=6 --start-period=15s \
