@@ -10,6 +10,7 @@ PersonA_Implementation_Guide.md
 # MSc proposal source documents — kept locally, not part of the codebase.
 ZeroTrust_MSc_Proposal.docx
 MSc Project Proposal Template (1).pdf
+ZTAC_Vulnerability_Fixes.md
 
 # mTLS material — regenerated locally by scripts/generate-certs.sh.
 # Never commit private keys or certs, but KEEP the directory present (via the
@@ -17,3 +18,6 @@ MSc Project Proposal Template (1).pdf
 # fresh clone even before the certs have been generated.
 envoy/certs/*
 !envoy/certs/.gitkeep
+
+# Never commit local backup files (may contain old secrets).
+*.bak

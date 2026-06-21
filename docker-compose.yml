@@ -37,6 +37,7 @@ services:
       - KEYCLOAK_ISSUER=http://keycloak:8080/realms/${KEYCLOAK_REALM}
       - LOGSTASH_URL=http://logstash:5050
       - INTERNAL_GATEWAY_SECRET=${INTERNAL_GATEWAY_SECRET}
+      - LOGSTASH_INGEST_TOKEN=${LOGSTASH_INGEST_TOKEN}
     networks:
       - ztac-net
     depends_on:
@@ -70,9 +71,8 @@ services:
     volumes:
       - ./elk/logstash/pipeline.conf:/usr/share/logstash/pipeline/pipeline.conf:ro
     ports:
-      # Loopback only — the log ingest endpoints are unauthenticated; do not
-      # expose them on the LAN where arbitrary audit records could be injected.
-      - "127.0.0.1:${LOGSTASH_TCP_PORT}:5044"
+      # Loopback only, and the HTTP ingest now requires basic auth so a
+      # compromised container cannot inject forged audit records.
       - "127.0.0.1:${LOGSTASH_HTTP_PORT}:5050"
     environment:
       - LS_JAVA_OPTS=-Xms256m -Xmx256m
@@ -81,6 +81,8 @@ services:
       - PIPELINE_BATCH_SIZE=1
       # Secret key for the HMAC-chained tamper-evident audit log.
       - AUDIT_HMAC_KEY=${AUDIT_HMAC_KEY}
+      # Shared secret required to POST audit logs to the HTTP ingest.
+      - LOGSTASH_INGEST_TOKEN=${LOGSTASH_INGEST_TOKEN}
     networks:
       - ztac-net
     depends_on:
@@ -131,6 +133,7 @@ services:
       - LOGSTASH_URL=http://logstash:5050
       - INTERNAL_GATEWAY_SECRET=${INTERNAL_GATEWAY_SECRET}
       - JWT_ALLOWED_AZP=${JWT_ALLOWED_AZP:-ztac-cli,ztac-gateway}
+      - LOGSTASH_INGEST_TOKEN=${LOGSTASH_INGEST_TOKEN}
     volumes:
       - ./services/shared:/app/shared:ro
     networks:

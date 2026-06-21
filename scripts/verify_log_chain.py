@@ -22,7 +22,13 @@ import sys
 import httpx
 
 # Must match the key configured for Logstash (docker-compose AUDIT_HMAC_KEY).
-AUDIT_HMAC_KEY = os.getenv("AUDIT_HMAC_KEY", "ztac-dev-audit-key")
+# Fail closed: verifying against a guessed default key would give a false
+# negative (or false PASS) rather than a real integrity check.
+AUDIT_HMAC_KEY = os.getenv("AUDIT_HMAC_KEY", "")
+if not AUDIT_HMAC_KEY:
+    print("ERROR: AUDIT_HMAC_KEY is not set. Export the same value Logstash uses "
+          "(see .env) before verifying the audit chain.")
+    sys.exit(1)
 
 
 def _chain_hash(previous_hash: str, body: str) -> str:

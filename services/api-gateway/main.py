@@ -18,6 +18,7 @@ OPA input object described in docs/token-schema.md.
 import asyncio
 import json
 import os
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -35,6 +36,9 @@ KEYCLOAK_ISSUER = os.getenv("KEYCLOAK_ISSUER", "http://keycloak:8080/realms/ztac
 PROTECTED_SERVICE_URL = os.getenv("PROTECTED_SERVICE_URL", "http://protected-service:8000")
 OPA_URL = os.getenv("OPA_URL", "http://opa:8181")
 LOGSTASH_URL = os.getenv("LOGSTASH_URL", "http://logstash:5050")
+# Shared secret for authenticated audit-log ingest (prevents log injection).
+LOGSTASH_INGEST_TOKEN = os.getenv("LOGSTASH_INGEST_TOKEN", "")
+_LOGSTASH_AUTH = httpx.BasicAuth("ztac", LOGSTASH_INGEST_TOKEN) if LOGSTASH_INGEST_TOKEN else None
 
 # Confidential client this gateway represents; logout tokens are audience-bound
 # to it, and (optionally) presented access tokens are restricted to it.
@@ -309,7 +313,7 @@ async def ship_log(entry: dict) -> None:
     """Send a structured audit log to Logstash; never block or raise."""
     assert _http is not None
     try:
-        await _http.post(LOGSTASH_URL, json=entry, timeout=2.0)
+        await _http.post(LOGSTASH_URL, json=entry, timeout=2.0, auth=_LOGSTASH_AUTH)
     except Exception:
         pass
 
@@ -512,17 +516,61 @@ async def verify():
     overall = "healthy" if all(v == "ok" for v in checks.values()) else "degraded"
     return {"status": overall, "checks": checks, "jwks_keys": len(_jwks.get("keys", []))}
 
+# Per-IP sliding-window rate limit for the unauthenticated token proxy, so it
+# cannot be abused as an open password-guessing relay against Keycloak.
+_token_rate: dict[str, list[float]] = {}
+_token_rate_lock = threading.Lock()
+TOKEN_RATE_LIMIT = int(os.getenv("TOKEN_RATE_LIMIT", "10"))
+TOKEN_RATE_WINDOW = int(os.getenv("TOKEN_RATE_WINDOW", "60"))
+ALLOWED_GRANT_TYPES = {"password", "refresh_token"}
+
+
+def _token_rate_ok(client_ip: str) -> bool:
+    """Return True if the request is within the per-IP rate limit."""
+    now = time.time()
+    with _token_rate_lock:
+        hits = [t for t in _token_rate.get(client_ip, []) if now - t < TOKEN_RATE_WINDOW]
+        if len(hits) >= TOKEN_RATE_LIMIT:
+            _token_rate[client_ip] = hits
+            return False
+        hits.append(now)
+        _token_rate[client_ip] = hits
+        return True
+
+
 @app.post("/token")
 async def token_proxy(request: Request):
-    """Convenience proxy to Keycloak's token endpoint (password grant)."""
+    """Convenience proxy to Keycloak's token endpoint (password/refresh grants).
+
+    Rate-limited per client IP and restricted to safe grant types.
+    """
     assert _http is not None
+
+    client_ip = request.client.host if request.client else "unknown"
+    if not _token_rate_ok(client_ip):
+        return JSONResponse(
+            {"error": "rate_limit_exceeded",
+             "detail": f"max {TOKEN_RATE_LIMIT} requests per {TOKEN_RATE_WINDOW}s"},
+            status_code=429,
+        )
+
     form = await request.form()
+    grant_type = form.get("grant_type", "password")
+    if grant_type not in ALLOWED_GRANT_TYPES:
+        return JSONResponse(
+            {"error": "unsupported_grant_type",
+             "detail": f"allowed: {sorted(ALLOWED_GRANT_TYPES)}"},
+            status_code=400,
+        )
+
     data = {
-        "grant_type": form.get("grant_type", "password"),
+        "grant_type": grant_type,
         "client_id": form.get("client_id", ""),
         "username": form.get("username", ""),
         "password": form.get("password", ""),
     }
+    if form.get("refresh_token"):
+        data["refresh_token"] = form.get("refresh_token")
     if form.get("client_secret"):
         data["client_secret"] = form.get("client_secret")
     try:

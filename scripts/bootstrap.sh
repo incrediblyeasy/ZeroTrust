@@ -40,7 +40,8 @@ else
   set_env_var KEYCLOAK_ADMIN_PASSWORD "$(openssl rand -hex 24)"
   set_env_var INTERNAL_GATEWAY_SECRET "$(openssl rand -hex 32)"
   set_env_var AUDIT_HMAC_KEY "$(openssl rand -hex 32)"
-  echo "    Generated random KEYCLOAK_ADMIN_PASSWORD, INTERNAL_GATEWAY_SECRET, AUDIT_HMAC_KEY."
+  set_env_var LOGSTASH_INGEST_TOKEN "$(openssl rand -hex 32)"
+  echo "    Generated random KEYCLOAK_ADMIN_PASSWORD, INTERNAL_GATEWAY_SECRET, AUDIT_HMAC_KEY, LOGSTASH_INGEST_TOKEN."
   echo "    (Keycloak admin password is stored in .env — never committed.)"
 fi
 

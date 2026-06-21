@@ -1,8 +1,8 @@
 {
   "resource_roles": {
-    "/api/data/public": {"required_roles": [], "sensitivity": "public"},
-    "/api/data/reports": {"required_roles": ["analyst", "admin"], "sensitivity": "internal"},
-    "/api/data/admin": {"required_roles": ["admin"], "sensitivity": "confidential"}
+    "/api/data/public": {"required_roles": [], "sensitivity": "public", "public": true},
+    "/api/data/reports": {"required_roles": ["analyst", "admin"], "sensitivity": "internal", "public": false},
+    "/api/data/admin": {"required_roles": ["admin"], "sensitivity": "confidential", "public": false}
   },
   "trusted_device_levels": ["managed", "byod_compliant"],
   "blocked_ip_risk_levels": ["high"]

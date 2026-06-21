@@ -25,7 +25,7 @@
   "accessCodeLifespanUserAction": 300,
   "accessCodeLifespanLogin": 1800,
   "defaultSignatureAlgorithm": "RS256",
-  "revokeRefreshToken": false,
+  "revokeRefreshToken": true,
   "refreshTokenMaxReuse": 0,
   "defaultRole": {
     "id": "default-role-ztac",
@@ -181,7 +181,7 @@
       "serviceAccountsEnabled": true,
       "authorizationServicesEnabled": false,
       "redirectUris": ["http://localhost:8080/*"],
-      "webOrigins": ["*"],
+      "webOrigins": ["+"],
       "frontchannelLogout": false,
       "attributes": {
         "backchannel.logout.url": "http://api-gateway:8001/backchannel-logout",
@@ -266,7 +266,7 @@
       "serviceAccountsEnabled": false,
       "authorizationServicesEnabled": false,
       "redirectUris": ["http://localhost:*"],
-      "webOrigins": ["*"],
+      "webOrigins": ["+"],
       "frontchannelLogout": false,
       "attributes": {
         "backchannel.logout.url": "http://api-gateway:8001/backchannel-logout",

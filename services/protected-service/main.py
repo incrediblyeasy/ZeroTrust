@@ -19,6 +19,9 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("protected-service")
 
 LOGSTASH_URL = os.getenv("LOGSTASH_URL", "http://logstash:5050")
+# Shared secret for authenticated audit-log ingest (prevents log injection).
+LOGSTASH_INGEST_TOKEN = os.getenv("LOGSTASH_INGEST_TOKEN", "")
+_LOGSTASH_AUTH = httpx.BasicAuth("ztac", LOGSTASH_INGEST_TOKEN) if LOGSTASH_INGEST_TOKEN else None
 
 # Shared secret the api-gateway injects on every forwarded request. The
 # protected service is a zero-trust resource: it does not trust the network, so
@@ -64,7 +67,7 @@ async def ship_log(log_entry: dict):
     log_entry["source_component"] = "protected-service"
     try:
         async with httpx.AsyncClient(timeout=2.0) as client:
-            await client.post(LOGSTASH_URL, json=log_entry)
+            await client.post(LOGSTASH_URL, json=log_entry, auth=_LOGSTASH_AUTH)
     except Exception:
         pass
 

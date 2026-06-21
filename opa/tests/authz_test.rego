@@ -175,3 +175,45 @@ test_allow_byod_compliant_device if {
 		"ip_risk": "low",
 	}
 }
+
+# Unknown resource paths are explicitly denied.
+test_deny_unknown_resource if {
+	not authz.allow with input as {
+		"user": "alice",
+		"roles": ["admin"],
+		"action": "GET",
+		"resource": "/api/data/secret-stuff",
+		"token_exp": future_exp,
+		"token_jti": "jti-alice",
+		"device_trust": "managed",
+		"ip_risk": "low",
+	}
+}
+
+# Deny reason is "unknown_resource" for unregistered paths.
+test_deny_reason_unknown_resource if {
+	authz.deny_reason == "unknown_resource" with input as {
+		"user": "alice",
+		"roles": ["admin"],
+		"action": "GET",
+		"resource": "/not/registered",
+		"token_exp": future_exp,
+		"token_jti": "jti-alice",
+		"device_trust": "managed",
+		"ip_risk": "low",
+	}
+}
+
+# Deny reason is "insufficient_role" when the path is known but the role is not.
+test_deny_reason_insufficient_role if {
+	authz.deny_reason == "insufficient_role" with input as {
+		"user": "charlie",
+		"roles": ["viewer"],
+		"action": "GET",
+		"resource": "/api/data/admin",
+		"token_exp": future_exp,
+		"token_jti": "jti-charlie",
+		"device_trust": "managed",
+		"ip_risk": "low",
+	}
+}
