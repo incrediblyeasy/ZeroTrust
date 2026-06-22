@@ -9,9 +9,11 @@ Expected behaviour:
   * No Authorization header on a protected endpoint  -> 401/403
   * No Authorization header on a PUBLIC endpoint      -> 200 (public is open)
   * Empty / garbage bearer token                      -> 401
-  * Direct access to the protected service (bypassing Envoy) is documented as
-    a known lab limitation (no app-level auth); in production, mTLS on the
-    service would refuse any client without a CA-signed certificate.
+  * Direct access to the protected service (bypassing Envoy) is refused: the
+    service enforces app-level authentication via the shared gateway-auth
+    secret that only the api-gateway injects, so a direct caller is rejected
+    (403) or unreachable. In production, mTLS on the service would add a second
+    layer, refusing any client without a CA-signed certificate.
 
 CyBOK AAA alignment: Authentication (no anonymous access to protected data),
 Authorisation (PEP mediates every request), Enforcement (no network bypass).
