@@ -99,17 +99,3 @@ static_resources:
                     socket_address:
                       address: api-gateway
                       port_value: 8001
-
-    - name: opa_cluster
-      type: STRICT_DNS
-      connect_timeout: 1s
-      lb_policy: ROUND_ROBIN
-      load_assignment:
-        cluster_name: opa_cluster
-        endpoints:
-          - lb_endpoints:
-              - endpoint:
-                  address:
-                    socket_address:
-                      address: opa
-                      port_value: 8181

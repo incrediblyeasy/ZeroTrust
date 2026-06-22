@@ -235,3 +235,22 @@ class TestBodySizeLimit:
         with TestClient(gw.app) as c:
             r = c.post("/api/data/reports", content=b"x" * 64)
             assert r.status_code == 413
+
+
+# --- gateway security response headers -------------------------------------
+
+class TestSecurityHeaders:
+    def test_headers_on_health(self):
+        with TestClient(gw.app) as c:
+            r = c.get("/health")
+            assert r.headers["x-content-type-options"] == "nosniff"
+            assert r.headers["x-frame-options"] == "DENY"
+            assert "default-src 'none'" in r.headers["content-security-policy"]
+
+    def test_headers_on_deny_response(self):
+        # Security headers must also be stamped on the gateway's own deny
+        # responses, which short-circuit before call_next.
+        with TestClient(gw.app) as c:
+            r = c.post("/api/data/reports", content=b"x" * 64)
+            assert r.status_code == 413
+            assert r.headers["x-content-type-options"] == "nosniff"

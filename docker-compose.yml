@@ -2,6 +2,13 @@ networks:
   ztac-net:
     driver: bridge
 
+volumes:
+  # Persistent store for the Logstash audit hash-chain state (last hash +
+  # sequence). Without this the chain resets to GENESIS on every restart.
+  logstash-chain:
+  # Durable fallback for gateway audit records that fail to ship to Logstash.
+  gateway-audit-fallback:
+
 services:
   keycloak:
     image: quay.io/keycloak/keycloak:24.0.4
@@ -70,6 +77,10 @@ services:
     container_name: ztac-logstash
     volumes:
       - ./elk/logstash/pipeline.conf:/usr/share/logstash/pipeline/pipeline.conf:ro
+      # Persist the hash-chain head + sequence across restarts. Mounting the
+      # canonical data dir gives the named volume logstash's uid (1000) so the
+      # pipeline can write its chain state.
+      - logstash-chain:/usr/share/logstash/data
     ports:
       # Loopback only, and the HTTP ingest now requires basic auth so a
       # compromised container cannot inject forged audit records.
@@ -136,6 +147,8 @@ services:
       - LOGSTASH_INGEST_TOKEN=${LOGSTASH_INGEST_TOKEN}
     volumes:
       - ./services/shared:/app/shared:ro
+      # Durable store for audit records that fail to reach Logstash.
+      - gateway-audit-fallback:/var/log/ztac
     networks:
       - ztac-net
     depends_on:

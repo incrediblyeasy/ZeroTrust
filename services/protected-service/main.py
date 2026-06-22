@@ -63,13 +63,24 @@ async def gateway_auth_middleware(request: Request, call_next):
     return await call_next(request)
 
 async def ship_log(log_entry: dict):
-    """Send structured log to Logstash asynchronously."""
+    """Send structured log to Logstash asynchronously.
+
+    The full record is already emitted to stdout (captured by `docker logs`) by
+    the audit middleware, so a shipment failure never loses the record outright;
+    we still surface the failure rather than swallowing it silently.
+    """
     log_entry["source_component"] = "protected-service"
     try:
         async with httpx.AsyncClient(timeout=2.0) as client:
-            await client.post(LOGSTASH_URL, json=log_entry, auth=_LOGSTASH_AUTH)
-    except Exception:
-        pass
+            resp = await client.post(LOGSTASH_URL, json=log_entry, auth=_LOGSTASH_AUTH)
+        if resp.status_code >= 300:
+            logger.warning(json.dumps(
+                {"audit_fallback": True, "ship_error": f"logstash_status_{resp.status_code}", **log_entry}
+            ))
+    except Exception as exc:
+        logger.warning(json.dumps(
+            {"audit_fallback": True, "ship_error": type(exc).__name__, **log_entry}
+        ))
 
 @app.middleware("http")
 async def audit_middleware(request: Request, call_next):
