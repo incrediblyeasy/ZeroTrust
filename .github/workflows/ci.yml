@@ -1,0 +1,46 @@
+name: CI
+
+# Runs the test suites that need no live Docker stack:
+#   * OPA policy unit tests (Rego)
+#   * Offline gateway / protected-service security tests (pytest)
+# The adversarial integration tests (test_token_replay.py, test_stale_session.py,
+# test_log_tampering.py, ...) require the full stack and are run locally via
+# scripts/run-tests.sh, not in CI.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  opa-tests:
+    name: OPA policy tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install OPA
+        uses: open-policy-agent/setup-opa@v2
+        with:
+          version: "0.66.0"
+      - name: Show OPA version
+        run: opa version
+      - name: Run Rego unit tests
+        run: opa test opa/policies opa/tests -v
+
+  offline-security-tests:
+    name: Offline security tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r services/api-gateway/requirements.txt
+          pip install -r tests/requirements.txt
+          pip install pytest cryptography
+      - name: Run offline security tests
+        run: pytest tests/test_offline_security.py -v -p no:cacheprovider

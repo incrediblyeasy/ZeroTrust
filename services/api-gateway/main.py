@@ -17,10 +17,12 @@ OPA input object described in docs/token-schema.md.
 
 import asyncio
 import json
+import logging
 import os
 import threading
 import time
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 import httpx
@@ -39,6 +41,15 @@ LOGSTASH_URL = os.getenv("LOGSTASH_URL", "http://logstash:5050")
 # Shared secret for authenticated audit-log ingest (prevents log injection).
 LOGSTASH_INGEST_TOKEN = os.getenv("LOGSTASH_INGEST_TOKEN", "")
 _LOGSTASH_AUTH = httpx.BasicAuth("ztac", LOGSTASH_INGEST_TOKEN) if LOGSTASH_INGEST_TOKEN else None
+
+# Local durable fallback for audit records that fail to ship to Logstash. Without
+# this, a Logstash outage would silently drop accountability records. The file
+# lives on a mounted volume so the records survive container restarts and can be
+# replayed/inspected after recovery.
+AUDIT_FALLBACK_LOG = os.getenv("AUDIT_FALLBACK_LOG", "/var/log/ztac/audit-fallback.log")
+
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+logger = logging.getLogger("api-gateway")
 
 # Confidential client this gateway represents; logout tokens are audience-bound
 # to it, and (optionally) presented access tokens are restricted to it.
@@ -84,8 +95,6 @@ RESERVED_HEADERS = {
     "x-ztac-gateway-auth",
 }
 
-app = FastAPI(title="ZTAC API Gateway")
-
 _http: httpx.AsyncClient | None = None
 _jwks: dict = {"keys": []}
 _jwks_lock = asyncio.Lock()
@@ -116,8 +125,12 @@ def _find_key(kid: str) -> dict | None:
             return key
     return None
 
-@app.on_event("startup")
-async def _startup() -> None:
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Manage the shared HTTP client and JWKS refresh task for the app's life.
+
+    Replaces the deprecated @app.on_event startup/shutdown hooks.
+    """
     global _http, _refresh_task
     _http = httpx.AsyncClient(timeout=10.0)
     try:
@@ -125,13 +138,15 @@ async def _startup() -> None:
     except Exception:
         pass
     _refresh_task = asyncio.create_task(_jwks_refresh_loop())
+    try:
+        yield
+    finally:
+        if _refresh_task is not None:
+            _refresh_task.cancel()
+        if _http is not None:
+            await _http.aclose()
 
-@app.on_event("shutdown")
-async def _shutdown() -> None:
-    if _refresh_task is not None:
-        _refresh_task.cancel()
-    if _http is not None:
-        await _http.aclose()
+app = FastAPI(title="ZTAC API Gateway", lifespan=lifespan)
 
 class TokenError(Exception):
     """Raised when a presented JWT fails validation."""
@@ -309,13 +324,41 @@ async def opa_allows(opa_input: dict) -> bool:
         raise OPAUnavailable(f"opa_status_{resp.status_code}")
     return resp.json().get("result") is True
 
+_fallback_lock = threading.Lock()
+
+
+def _write_audit_fallback(entry: dict, reason: str) -> None:
+    """Persist an audit record locally when it cannot be shipped to Logstash.
+
+    Tries an append-only file on the mounted log volume first; if that is not
+    writable, falls back to stdout (captured by `docker logs`). Either way the
+    accountability record is never silently lost.
+    """
+    record = {"audit_fallback": True, "ship_error": reason, **entry}
+    line = json.dumps(record)
+    try:
+        os.makedirs(os.path.dirname(AUDIT_FALLBACK_LOG) or ".", exist_ok=True)
+        with _fallback_lock, open(AUDIT_FALLBACK_LOG, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except OSError:
+        logger.warning(line)
+
+
 async def ship_log(entry: dict) -> None:
-    """Send a structured audit log to Logstash; never block or raise."""
+    """Send a structured audit log to Logstash; never block or raise.
+
+    If shipment fails (Logstash down, auth rejected, non-2xx), the record is
+    written to a local durable fallback instead of being dropped.
+    """
     assert _http is not None
     try:
-        await _http.post(LOGSTASH_URL, json=entry, timeout=2.0, auth=_LOGSTASH_AUTH)
-    except Exception:
-        pass
+        resp = await _http.post(
+            LOGSTASH_URL, json=entry, timeout=2.0, auth=_LOGSTASH_AUTH
+        )
+        if resp.status_code >= 300:
+            _write_audit_fallback(entry, f"logstash_status_{resp.status_code}")
+    except Exception as exc:
+        _write_audit_fallback(entry, f"{type(exc).__name__}")
 
 def emit_audit(
     request: Request,
@@ -368,13 +411,27 @@ async def forward_to_protected(
         headers["x-ztac-gateway-auth"] = INTERNAL_GATEWAY_SECRET
 
     url = f"{PROTECTED_SERVICE_URL}{request.url.path}"
-    upstream = await _http.request(
-        request.method,
-        url,
-        params=dict(request.query_params),
-        content=body,
-        headers=headers,
-    )
+    try:
+        upstream = await _http.request(
+            request.method,
+            url,
+            params=dict(request.query_params),
+            content=body,
+            headers=headers,
+        )
+    except httpx.TimeoutException:
+        # Upstream is reachable but too slow — surface a clean Gateway Timeout
+        # instead of an unhandled 500 with a stack trace.
+        return JSONResponse(
+            {"error": "upstream_timeout", "detail": "protected_service_timeout"},
+            status_code=504,
+        )
+    except httpx.HTTPError:
+        # Upstream unreachable (connection refused, DNS failure, reset, ...).
+        return JSONResponse(
+            {"error": "bad_gateway", "detail": "protected_service_unavailable"},
+            status_code=502,
+        )
 
     resp_headers = {
         k: v for k, v in upstream.headers.items() if k.lower() not in HOP_BY_HOP
@@ -490,6 +547,26 @@ async def gateway_middleware(request: Request, call_next):
     body = await request.body()
     resp = await forward_to_protected(request, body, identity, request_id)
     return done(resp, "allow", None)
+
+# Registered after gateway_middleware so it is the OUTERMOST middleware and
+# stamps security headers on every response, including the gateway's own deny
+# responses (which short-circuit before gateway_middleware calls call_next).
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
+    "Cache-Control": "no-store",
+}
+
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    for header, value in SECURITY_HEADERS.items():
+        response.headers.setdefault(header, value)
+    return response
+
 
 @app.get("/health")
 async def health():
