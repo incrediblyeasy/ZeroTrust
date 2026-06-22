@@ -15,7 +15,7 @@ implements each of these as a discrete, independently deployable service.
 | Policy Engine (PE) | OPA (Rego policies) | Declarative, hot-reloadable |
 | Policy Administrator (PA) | API Gateway | JWT validation, request forwarding |
 | Policy Decision Point (PDP) | OPA | REST API, ABAC evaluation |
-| Policy Enforcement Point (PEP) | Envoy Proxy | `ext_authz` filter |
+| Policy Enforcement Point (PEP) | API Gateway + Envoy Proxy | Gateway queries OPA per request, then forwards via Envoy (router filter) |
 | Continuous Diagnostics & Mitigation (CDM) | ELK Stack | Audit logs, dashboards |
 | Industry Compliance | CyBOK Alignment Matrix | Formal mapping to AAA KA |
 | Data Access Policy | `data.json` + `authz.rego` | Resource sensitivity classification |
@@ -32,9 +32,10 @@ connection, and the **data plane** carries the authorised traffic. In ZTAC:
   for an allow/deny decision *per request* — not once per session. This delivers
   the NIST tenet of *dynamic, per-session authorisation*.
 - The **data plane** is Envoy. No request reaches the protected service unless
-  Envoy's `ext_authz` step and the gateway's checks both pass; Envoy fails
-  **closed** if the PDP is unreachable, satisfying the tenet that *resources are
-  not reachable without explicit authorisation*.
+  the gateway's checks pass: the gateway queries the OPA PDP and fails
+  **closed** if the PDP is unreachable, only then forwarding through Envoy. This
+  satisfies the tenet that *resources are not reachable without explicit
+  authorisation*.
 - The **Data Access Policy** (`data.json` + `authz.rego`) encodes resource
   sensitivity (`public` / `internal` / `confidential`) and the roles/attributes
   required for each, realising NIST's notion of policy as an explicit,
@@ -61,7 +62,7 @@ ZTAC mirrors its building blocks with open-source components.
 | BeyondCorp concept | BeyondCorp implementation | ZTAC equivalent |
 |---|---|---|
 | Device inventory & trust | Managed device inventory + certificates feeding a trust tier | Simulated via the `x-device-trust` header (`managed` / `byod_compliant` / `untrusted`); evaluated by `authz.rego` |
-| Access Proxy | Google-internal reverse proxy enforcing access | **Envoy** with the `ext_authz` filter |
+| Access Proxy | Google-internal reverse proxy enforcing access | **API Gateway** (validates JWT, calls OPA) fronting **Envoy** as the reverse proxy |
 | Single Sign-On | Google SSO / identity service | **Keycloak** (OIDC, RS256 JWTs) |
 | Access Control Engine | Centralised policy engine consulted by the proxy | **OPA** (Rego ABAC/RBAC) |
 | Trust Inference / tiers | Continuous trust scoring per device & user | `device_trust` + `ip_risk` attributes, re-evaluated per request |
