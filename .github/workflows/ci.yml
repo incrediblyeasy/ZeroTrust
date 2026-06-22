@@ -20,11 +20,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install OPA
-        run: |
-          curl -sSL -o opa https://openpolicyagent.org/downloads/v0.66.0/opa_linux_amd64_static
-          chmod +x opa
-          sudo mv opa /usr/local/bin/opa
-          opa version
+        uses: open-policy-agent/setup-opa@v2
+        with:
+          version: "0.66.0"
+      - name: Show OPA version
+        run: opa version
       - name: Run Rego unit tests
         run: opa test opa/policies opa/tests -v
 
